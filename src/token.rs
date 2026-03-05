@@ -7,7 +7,7 @@
 // ============================================================
 
 /// Source location for diagnostic reporting.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Span {
     pub line: usize,
     pub column: usize,
@@ -80,6 +80,11 @@ pub enum TokenKind {
 
     // ── ABI Keywords ──
     Extern,
+
+    // ── Introspection Keywords ──
+    SizeOf,
+    AlignOf,
+    OffsetOf,
 
     // ── Arithmetic Operators ──
     Plus,             // +
@@ -172,6 +177,9 @@ impl TokenKind {
             "pub"      => Some(TokenKind::Pub),
             "mod"      => Some(TokenKind::Mod),
             "extern"   => Some(TokenKind::Extern),
+            "size_of"  => Some(TokenKind::SizeOf),
+            "align_of" => Some(TokenKind::AlignOf),
+            "offset_of"=> Some(TokenKind::OffsetOf),
             "relaxed"  => Some(TokenKind::Relaxed),
             "acquire"  => Some(TokenKind::Acquire),
             "release"  => Some(TokenKind::Release),

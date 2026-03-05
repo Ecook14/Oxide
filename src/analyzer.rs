@@ -181,6 +181,9 @@ pub struct Analyzer {
 
     // Type checking context
     expected_return_type: Option<Type>,
+
+    // Codegen Context Transfer
+    pub field_access_map: std::collections::HashMap<Span, String>,
 }
 
 impl Analyzer {
@@ -195,6 +198,7 @@ impl Analyzer {
             errors: Vec::new(),
             warnings: Vec::new(),
             expected_return_type: None,
+            field_access_map: std::collections::HashMap::new(),
         }
     }
 
@@ -677,6 +681,7 @@ impl Analyzer {
                 };
                 
                 if let Type::Struct(name) = resolved_ty {
+                    self.field_access_map.insert(span.clone(), name.clone());
                     if let Some(s) = self.structs.iter().find(|s| s.name == name).cloned() {
                         if let Some((_, f_ty, _)) = s.fields.iter().find(|(n, _, _)| n == field) {
                             return f_ty.clone();
@@ -684,6 +689,7 @@ impl Analyzer {
                     }
                     self.emit(ErrorCode::UndefinedVariable, format!("Struct '{}' has no field '{}'", name, field), span);
                 } else if let Type::Closure(_, _) = resolved_ty {
+                    self.field_access_map.insert(span.clone(), "Closure".to_string());
                     if field == "ptr_data" || field == "ptr_fn" {
                         return Type::USize;
                     }

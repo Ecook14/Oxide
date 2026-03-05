@@ -220,6 +220,11 @@ impl Validator {
                 }
                 self.moved_registers.remove(dest);
             }
+            OxIR::CallVoid(_, args) => {
+                for arg in args {
+                    self.check_usage(arg, idx);
+                }
+            }
 
             // ── Constants ──
             OxIR::ConstInt(_, dest) | 

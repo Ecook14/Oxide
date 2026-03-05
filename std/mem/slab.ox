@@ -7,7 +7,7 @@
 // ============================================================
 
 extern "c" fn malloc(size: u64) -> *mut u8;
-extern "c" fn abort(msg: *const u8) -> void;
+extern "c" fn abort(msg: *u8) -> void;
 
 pub shared struct SlabAllocator {
     pub current_ptr: atomic<usize>,
@@ -33,7 +33,7 @@ pub fn create_slab(size: usize) -> SlabAllocator {
     };
 }
 
-pub fn alloc(self: &SlabAllocator, size: usize, align: usize) -> usize {
+pub fn alloc(self: SlabAllocator, size: usize, align: usize) -> usize {
     loop {
         // SAFETY: Using address-of operator to ensure atomic operation on the pointer.
         let current = (&self.current_ptr).load(relaxed);
@@ -50,6 +50,6 @@ pub fn alloc(self: &SlabAllocator, size: usize, align: usize) -> usize {
     }
 }
 
-pub fn reset(self: &SlabAllocator) {
+pub fn reset(self: SlabAllocator) {
     (&self.current_ptr).store(0, seq_cst);
 }

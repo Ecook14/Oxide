@@ -243,7 +243,7 @@ fn run_compile(source: &str, filename: &str) {
         process::exit(1);
     }
 
-    let mut cg = codegen::CodeGen::new();
+    let mut cg = codegen::CodeGen::new(az.field_access_map);
     cg.generate(&program);
 
     let mut val = validator::Validator::new();
@@ -281,7 +281,7 @@ fn run_build(source: &str, filename: &str) {
         process::exit(1);
     }
 
-    let mut cg = codegen::CodeGen::new();
+    let mut cg = codegen::CodeGen::new(az.field_access_map);
     cg.generate(&program);
 
     let mut val = validator::Validator::new();

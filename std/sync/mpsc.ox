@@ -6,7 +6,8 @@
 // ============================================================
 
 extern "c" fn malloc(size: u64) -> *mut u8;
-extern "c" fn abort(msg: *const u8) -> void;
+extern "c" fn abort(msg: *u8) -> void;
+extern "c" fn sched_yield() -> i32;
 
 shared struct MpscQueue {
     pub head: atomic<usize>,
@@ -48,7 +49,7 @@ pub fn new_queue(capacity: usize) -> MpscQueue {
     };
 }
 
-pub fn enqueue(self: &MpscQueue, val: u64) -> bool {
+pub fn enqueue(self: MpscQueue, val: u64) -> bool {
     loop {
         // SAFETY: Using address-of for atomic operations on shared fields.
         let pos = (&self.tail).load(relaxed);
@@ -67,11 +68,13 @@ pub fn enqueue(self: &MpscQueue, val: u64) -> bool {
             }
         } else if diff < 0 {
             return false; // Queue is full
+        } else {
+            sched_yield(); // Help scheduling during contention
         }
     }
 }
 
-pub fn dequeue(self: &MpscQueue) -> u64 {
+pub fn dequeue(self: MpscQueue) -> u64 {
     loop {
         let pos = (&self.head).load(relaxed);
         let s_ptr = (self.sequences + ((pos % self.capacity) * 8)) as *mut atomic<usize>;
@@ -79,11 +82,20 @@ pub fn dequeue(self: &MpscQueue) -> u64 {
         let diff = (seq as isize) - ((pos as isize) + 1);
         
         if diff == 0 {
-            let d_ptr = (self.buffer + ((pos % self.capacity) * 8)) as *mut u64;
-            let val = unsafe { *d_ptr };
-            s_ptr.store(pos + self.capacity, release);
-            (&self.head).store(pos + 1, relaxed);
-            return val;
+            if (&self.head).compare_exchange(pos, pos + 1, relaxed) {
+                let d_ptr = (self.buffer + ((pos % self.capacity) * 8)) as *mut u64;
+                let mut val = 0 as u64;
+                unsafe {
+                    val = *d_ptr;
+                }
+                s_ptr.store(pos + self.capacity, release);
+                return val;
+            }
+        } else if diff < 0 {
+            // Queue is empty or data hasn't been committed yet
+            sched_yield();
+        } else {
+            sched_yield();
         }
     }
 }

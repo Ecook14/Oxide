@@ -318,7 +318,12 @@ impl Parser {
                 Ok(TypeExpr::Array(Box::new(elem), Box::new(size), span))
             }
             TokenKind::Identifier => {
-                let name = self.advance().literal.clone();
+                let mut name = self.advance().literal.clone();
+                while self.match_token(TokenKind::ColonColon) {
+                    let next = self.expect(TokenKind::Identifier)?.literal;
+                    name.push_str("::");
+                    name.push_str(&next);
+                }
                 Ok(TypeExpr::Named(name, span))
             }
             TokenKind::LeftParen => {
@@ -865,6 +870,35 @@ impl Parser {
             TokenKind::Release => { self.advance(); Ok(Expr::Ordering(MemoryOrdering::Release, span)) }
             TokenKind::AcqRel  => { self.advance(); Ok(Expr::Ordering(MemoryOrdering::AcqRel, span)) }
             TokenKind::SeqCst  => { self.advance(); Ok(Expr::Ordering(MemoryOrdering::SeqCst, span)) }
+            
+            TokenKind::SizeOf => {
+                self.advance();
+                self.expect(TokenKind::Less)?;
+                let ty = self.parse_type()?;
+                self.expect(TokenKind::Greater)?;
+                self.expect(TokenKind::LeftParen)?;
+                self.expect(TokenKind::RightParen)?;
+                Ok(Expr::SizeOf(ty, span))
+            }
+            TokenKind::AlignOf => {
+                self.advance();
+                self.expect(TokenKind::Less)?;
+                let ty = self.parse_type()?;
+                self.expect(TokenKind::Greater)?;
+                self.expect(TokenKind::LeftParen)?;
+                self.expect(TokenKind::RightParen)?;
+                Ok(Expr::AlignOf(ty, span))
+            }
+            TokenKind::OffsetOf => {
+                self.advance();
+                self.expect(TokenKind::Less)?;
+                let ty = self.parse_type()?;
+                self.expect(TokenKind::Greater)?;
+                self.expect(TokenKind::LeftParen)?;
+                let field = self.expect(TokenKind::Identifier)?.literal;
+                self.expect(TokenKind::RightParen)?;
+                Ok(Expr::OffsetOf(ty, field, span))
+            }
             TokenKind::Identifier => {
                 self.advance();
                 let name = tok.literal.clone();

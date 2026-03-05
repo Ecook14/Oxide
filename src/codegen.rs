@@ -60,6 +60,7 @@ pub enum OxIR {
     Branch(String, String, String),      // br %cond, %true_label, %false_label
     Return(Option<String>),              // ret %val
     Call(String, Vec<String>, String),   // call %func, [args] -> %dest
+    CallVoid(String, Vec<String>),       // call_void %func, [args]
     Abort(Option<String>),               // abort "msg"
 
     // ── Constants ──
@@ -145,10 +146,11 @@ pub struct CodeGen {
     functions: Vec<String>,
     closure_counter: usize,
     pending_closures: Vec<(String, String, Vec<String>, Vec<String>, Block)>, // (struct_name, tramp_name, captures, params, body)
+    field_access_map: std::collections::HashMap<crate::token::Span, String>,
 }
 
 impl CodeGen {
-    pub fn new() -> Self {
+    pub fn new(field_access_map: std::collections::HashMap<crate::token::Span, String>) -> Self {
         CodeGen {
             instructions: Vec::new(),
             temp_counter: 0,
@@ -158,6 +160,7 @@ impl CodeGen {
             functions: Vec::new(),
             closure_counter: 0,
             pending_closures: Vec::new(),
+            field_access_map,
         }
     }
 
@@ -325,7 +328,31 @@ impl CodeGen {
                 self.emit(OxIR::Return(val));
             }
             Stmt::ExprStmt(expr) => {
-                self.gen_expr(expr);
+                // If it's a stand-alone call, we don't care about the return value (e.g. free())
+                if let Expr::Call(callee, args, _) = expr {
+                    let mut is_direct = false;
+                    let mut callee_name = String::new();
+                    
+                    if let Expr::Ident(name, _) = callee.as_ref() {
+                        if self.functions.contains(name) {
+                            is_direct = true;
+                            callee_name = name.clone();
+                        }
+                    } else if let Expr::Path(path, _) = callee.as_ref() {
+                        is_direct = true;
+                        callee_name = path.last().unwrap().clone();
+                    }
+
+                    if is_direct {
+                        let arg_regs: Vec<String> = args.iter().map(|a| self.gen_expr(a)).collect();
+                        self.emit(OxIR::CallVoid(callee_name, arg_regs));
+                    } else {
+                        // Let the default expression matcher evaluate closures or property chains natively
+                        self.gen_expr(expr);
+                    }
+                } else {
+                    self.gen_expr(expr);
+                }
             }
             Stmt::If(if_stmt) => {
                 self.gen_if(if_stmt);
@@ -402,41 +429,68 @@ impl CodeGen {
             }
             Stmt::Assignment(assign) => {
                 let value = self.gen_expr(&assign.value);
-                let target_reg = match &assign.target {
-                    Expr::Ident(name, _) => format!("%{}", name),
-                    _ => self.gen_expr(&assign.target)
-                };
 
-                let store_val = match assign.op {
-                    AssignOp::Assign => value,
-                    _ => {
-                        let load_temp = self.fresh_temp();
-                        self.emit(OxIR::Load(target_reg.clone(), load_temp.clone()));
-                        let math_temp = self.fresh_temp();
+                if let Expr::FieldAccess(obj, field, span) = &assign.target {
+                    let ptr_reg = self.gen_expr(obj);
+                    let struct_name = self.field_access_map.get(span)
+                        .cloned()
+                        .unwrap_or_else(|| "Unknown".to_string());
                         
-                        let instr = match assign.op {
-                            AssignOp::AddAssign    => OxIR::Add(load_temp, value, math_temp.clone()),
-                            AssignOp::SubAssign    => OxIR::Sub(load_temp, value, math_temp.clone()),
-                            AssignOp::MulAssign    => OxIR::Mul(load_temp, value, math_temp.clone()),
-                            AssignOp::DivAssign    => OxIR::Div(load_temp, value, math_temp.clone()),
-                            AssignOp::BitAndAssign => OxIR::BitAnd(load_temp, value, math_temp.clone()),
-                            AssignOp::BitOrAssign  => OxIR::BitOr(load_temp, value, math_temp.clone()),
-                            AssignOp::BitXorAssign => OxIR::BitXor(load_temp, value, math_temp.clone()),
-                            AssignOp::ShlAssign    => OxIR::Shl(load_temp, value, math_temp.clone()),
-                            AssignOp::ShrAssign    => OxIR::Shr(load_temp, value, math_temp.clone()),
-                            _ => unreachable!()
-                        };
-                        self.emit(instr);
-                        math_temp
-                    }
-                };
+                    let final_val = match assign.op {
+                        AssignOp::Assign => value,
+                        _ => {
+                            let load_temp = self.fresh_temp();
+                            self.emit(OxIR::LoadField(ptr_reg.clone(), struct_name.clone(), field.clone(), load_temp.clone()));
+                            let math_temp = self.fresh_temp();
+                            let instr = match assign.op {
+                                AssignOp::AddAssign    => OxIR::Add(load_temp, value, math_temp.clone()),
+                                AssignOp::SubAssign    => OxIR::Sub(load_temp, value, math_temp.clone()),
+                                AssignOp::MulAssign    => OxIR::Mul(load_temp, value, math_temp.clone()),
+                                AssignOp::DivAssign    => OxIR::Div(load_temp, value, math_temp.clone()),
+                                AssignOp::BitAndAssign => OxIR::BitAnd(load_temp, value, math_temp.clone()),
+                                AssignOp::BitOrAssign  => OxIR::BitOr(load_temp, value, math_temp.clone()),
+                                AssignOp::BitXorAssign => OxIR::BitXor(load_temp, value, math_temp.clone()),
+                                AssignOp::ShlAssign    => OxIR::Shl(load_temp, value, math_temp.clone()),
+                                AssignOp::ShrAssign    => OxIR::Shr(load_temp, value, math_temp.clone()),
+                                _ => unreachable!()
+                            };
+                            self.emit(instr);
+                            math_temp
+                        }
+                    };
+                    self.emit(OxIR::StoreField(final_val, ptr_reg, struct_name, field.clone()));
+                } else {
+                    let target_reg = match &assign.target {
+                        Expr::Ident(name, _) => format!("%{}", name),
+                        Expr::UnaryOp(UnaryOp::Deref, operand, _) => self.gen_expr(operand),
+                        _ => self.gen_expr(&assign.target)
+                    };
 
-                // For simple variable assignments, we know the register name
-                let target_reg = match &assign.target {
-                    Expr::Ident(name, _) => format!("%{}", name),
-                    _ => self.gen_expr(&assign.target)
-                };
-                self.emit(OxIR::Store(store_val, target_reg));
+                    let store_val = match assign.op {
+                        AssignOp::Assign => value,
+                        _ => {
+                            let load_temp = self.fresh_temp();
+                            self.emit(OxIR::Load(target_reg.clone(), load_temp.clone()));
+                            let math_temp = self.fresh_temp();
+                            
+                            let instr = match assign.op {
+                                AssignOp::AddAssign    => OxIR::Add(load_temp, value, math_temp.clone()),
+                                AssignOp::SubAssign    => OxIR::Sub(load_temp, value, math_temp.clone()),
+                                AssignOp::MulAssign    => OxIR::Mul(load_temp, value, math_temp.clone()),
+                                AssignOp::DivAssign    => OxIR::Div(load_temp, value, math_temp.clone()),
+                                AssignOp::BitAndAssign => OxIR::BitAnd(load_temp, value, math_temp.clone()),
+                                AssignOp::BitOrAssign  => OxIR::BitOr(load_temp, value, math_temp.clone()),
+                                AssignOp::BitXorAssign => OxIR::BitXor(load_temp, value, math_temp.clone()),
+                                AssignOp::ShlAssign    => OxIR::Shl(load_temp, value, math_temp.clone()),
+                                AssignOp::ShrAssign    => OxIR::Shr(load_temp, value, math_temp.clone()),
+                                _ => unreachable!()
+                            };
+                            self.emit(instr);
+                            math_temp
+                        }
+                    };
+                    self.emit(OxIR::Store(store_val, target_reg));
+                }
             }
             _ => {}
         }
@@ -552,9 +606,11 @@ impl CodeGen {
                     UnaryOp::Not    => OxIR::Not(val, dest.clone()),
                     UnaryOp::BitNot => OxIR::BitNot(val, dest.clone()),
                     UnaryOp::Ref    => { 
-                        if let Expr::FieldAccess(obj, field, _) = operand.as_ref() {
+                        if let Expr::FieldAccess(obj, field, span) = operand.as_ref() {
                             let base = self.gen_expr(&obj);
-                            let struct_name = "Unknown".to_string(); // Resolved in backend pre-pass typically
+                            let struct_name = self.field_access_map.get(span)
+                                .cloned()
+                                .unwrap_or_else(|| "Unknown".to_string());
                             self.emit(OxIR::FieldAddr(base, struct_name, field.clone(), dest.clone()));
                         } else {
                             self.emit(OxIR::BorrowImmut(val, dest.clone())); 
@@ -613,18 +669,8 @@ impl CodeGen {
                 }
             }
             Expr::MethodCall(receiver, method, args, _) => {
-                let mut recv = self.gen_expr(receiver);
+                let recv = self.gen_expr(receiver);
                 
-                // For atomic methods, we need the pointer to the variable, not its loaded value.
-                // If the receiver was an identifier, gen_expr already emitted a LOAD.
-                // We'll override 'recv' if it's an atomic method called on a direct variable.
-                let is_atomic_method = matches!(method.as_str(), "load" | "store" | "fetch_add" | "fetch_sub" | "fetch_and" | "fetch_or" | "fetch_xor" | "swap" | "compare_exchange");
-                if is_atomic_method {
-                    if let Expr::Ident(name, _) = receiver.as_ref() {
-                        recv = format!("%{}", name);
-                    }
-                }
-
                 // Atomic method detection
                 match method.as_str() {
                     "load" if args.len() == 1 => {
@@ -688,20 +734,14 @@ impl CodeGen {
                 }
                 dest
             }
-            Expr::FieldAccess(obj, field_name, _) => {
+            Expr::FieldAccess(obj, field_name, span) => {
                 let base = self.gen_expr(obj);
                 let dest = self.fresh_temp();
                 
-                // Heuristic for closure and stdlib magic fields
-                let struct_name = if field_name == "ptr_fn" || field_name == "ptr_data" {
-                    "Closure".to_string()
-                } else if field_name == "head" || field_name == "tail" || field_name == "buffer" || field_name == "capacity" || field_name == "sequences" {
-                    "MpscQueue".to_string()
-                } else if field_name == "current_ptr" || field_name == "max_size" || field_name == "region_start" {
-                    "SlabAllocator".to_string()
-                } else {
-                    "Unknown".to_string()
-                };
+                // Use semantic analyzer's exact struct resolution
+                let struct_name = self.field_access_map.get(span)
+                    .cloned()
+                    .unwrap_or_else(|| "Unknown".to_string());
                 
                 self.emit(OxIR::LoadField(base, struct_name, field_name.clone(), dest.clone()));
                 dest
@@ -871,6 +911,7 @@ impl CodeGen {
                 OxIR::Branch(cond, t, f) => out.push_str(&format!("    br {}, {}, {}\n", cond, t, f)),
                 OxIR::Return(val) => out.push_str(&format!("    ret {}\n", val.as_deref().unwrap_or("void"))),
                 OxIR::Call(func, args, dest) => out.push_str(&format!("    {} = call {}({})\n", dest, func, args.join(", "))),
+                OxIR::CallVoid(func, args) => out.push_str(&format!("    call_void {}({})\n", func, args.join(", "))),
                 OxIR::Abort(msg) => out.push_str(&format!("    abort {}\n", msg.as_deref().unwrap_or("[]"))),
 
                 OxIR::ConstInt(v, dest) => out.push_str(&format!("    {} = const_i64 {}\n", dest, v)),

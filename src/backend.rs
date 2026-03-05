@@ -302,6 +302,25 @@ impl CGenerator {
                     self.push(&format!("uint64_t {} = (uint64_t){}({});", d, f_name, a.join(", ")));
                 }
             }
+            OxIR::CallVoid(func, args) => {
+                let a = args.iter().map(|arg| sanitize_reg(arg)).collect::<Vec<_>>();
+                if func == "printf" {
+                    if a.is_empty() {
+                        self.push("printf();");
+                    } else {
+                        let fmt = &a[0];
+                        let rest = if a.len() > 1 { format!(", {}", a[1..].join(", ")) } else { String::new() };
+                        self.push(&format!("printf((const char*){}{});", fmt, rest));
+                    }
+                } else {
+                    let f_name = if func.starts_with('%') {
+                        format!("((void(*)())({}))", sanitize_reg(func))
+                    } else {
+                        func.clone()
+                    };
+                    self.push(&format!("{}({});", f_name, a.join(", ")));
+                }
+            }
             OxIR::Abort(msg) => {
                 if let Some(m) = msg {
                     self.push(&format!("printf(\"\\n[Oxide Panic] %s\\n\", \"{}\");", m));
@@ -391,7 +410,14 @@ fn binop(op: &str, a: &str, b: &str, d: &str, out: &mut String, indent: usize) {
     let l = sanitize_reg(a);
     let r = sanitize_reg(b);
     let res = sanitize_reg(d);
-    out.push_str(&format!("{}uint64_t {} = {} {} {};\n", prefix, res, l, op, r));
+    
+    // In Oxide v0.1, variables are stored in uint64_t indiscriminately.
+    // To preserve signed semantics for comparisons and math, we cast to int64_t.
+    if op == "<" || op == ">" || op == "<=" || op == ">=" || op == "/" || op == "%" {
+        out.push_str(&format!("{}uint64_t {} = (int64_t){} {} (int64_t){};\n", prefix, res, l, op, r));
+    } else {
+        out.push_str(&format!("{}uint64_t {} = {} {} {};\n", prefix, res, l, op, r));
+    }
 }
 
 fn unop(op: &str, a: &str, d: &str, out: &mut String, indent: usize) {

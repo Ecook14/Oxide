@@ -317,6 +317,12 @@ pub enum Expr {
     Ordering(MemoryOrdering, Span),
     /// Closure expression: |arg1, arg2| { body }
     Closure(Vec<String>, Block, Span),
+    /// Compiler Intrinsic: size_of<T>()
+    SizeOf(TypeExpr, Span),
+    /// Compiler Intrinsic: align_of<T>()
+    AlignOf(TypeExpr, Span),
+    /// Compiler Intrinsic: offset_of<T>(field)
+    OffsetOf(TypeExpr, String, Span),
 }
 
 #[derive(Debug, Clone)]
